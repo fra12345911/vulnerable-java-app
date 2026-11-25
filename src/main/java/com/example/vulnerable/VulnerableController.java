@@ -29,6 +29,7 @@ public class VulnerableController {
     // In-memory user store (simulating database)
     private static final List<Map<String, Object>> users = new ArrayList<>();
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(VulnerableController.class);
+    private static final java.security.SecureRandom SECURE_RANDOM = new java.security.SecureRandom();
     static {
         Map<String, Object> admin = new HashMap<>();
         admin.put("id", 1);
@@ -189,31 +190,33 @@ public class VulnerableController {
     }
 
     // VULNERABILITY: Server-Side Request Forgery (SSRF) (CWE-918)
-    @GetMapping("/proxy")
-    public Map<String, Object> proxy(@RequestParam String url) {
-        Map<String, Object> response = new HashMap<>();
-        try {
-            // Vulnerable: No URL validation, allows internal network access
-            URL targetUrl = java.net.URI.create(url).toURL();
-            HttpURLConnection connection = (HttpURLConnection) targetUrl.openConnection();
-            connection.setRequestMethod("GET");
-
-            BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+@GetMapping("/proxy")
+public Map<String, Object> proxy(@RequestParam String url) {
+    Map<String, Object> response = new HashMap<>();
+    try {
+        java.net.URI uri = java.net.URI.create(url);
+        Set<String> allowedHosts = Set.of("example.com", "www.example.com");
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || !allowedHosts.contains(uri.getHost().toLowerCase())) {
+            response.put("error", "URL host or scheme not allowed");
+            return response;
+        }
+        URL targetUrl = new java.net.URI("https", uri.getHost().toLowerCase(), uri.getPath() != null ? uri.getPath() : "", null).toURL();
+        HttpURLConnection connection = (HttpURLConnection) targetUrl.openConnection();
+        connection.setRequestMethod("GET");
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
             StringBuilder content = new StringBuilder();
             String line;
             while ((line = reader.readLine()) != null) {
                 content.append(line);
             }
-            reader.close();
-
             response.put("data", content.toString());
             response.put("status", connection.getResponseCode());
-        } catch (Exception e) {
-            response.put("error", e.getMessage());
         }
-        return response;
+    } catch (Exception e) {
+        response.put("error", "Request failed");
     }
-
+    return response;
+}
     // VULNERABILITY: Remote Code Execution via Script Engine (CWE-94)
     @PostMapping("/evaluate")
     public Map<String, Object> evaluate(@RequestBody Map<String, String> request) {
@@ -336,19 +339,17 @@ public class VulnerableController {
     }
 
     // VULNERABILITY: Insecure Randomness (CWE-330)
-    @GetMapping("/token")
-    public Map<String, Object> getToken() {
-        // Vulnerable: Random is not cryptographically secure
-        java.security.SecureRandom random = new java.security.SecureRandom();
-        StringBuilder tokenBuilder = new StringBuilder(16);
-        for (int i = 0; i < 16; i++) {
-            tokenBuilder.append((char) ('a' + random.nextInt(26)));
-        }
-        String token = tokenBuilder.toString();
-        Map<String, Object> response = new HashMap<>();
-        response.put("token", token);
-        return response;
+@GetMapping("/token")
+public Map<String, Object> getToken() {
+    StringBuilder tokenBuilder = new StringBuilder(16);
+    for (int i = 0; i < 16; i++) {
+        tokenBuilder.append((char) ('a' + SECURE_RANDOM.nextInt(26)));
     }
+    String token = tokenBuilder.toString();
+    Map<String, Object> response = new HashMap<>();
+    response.put("token", token);
+    return response;
+}
 
     // VULNERABILITY: Open Redirect (CWE-601)
     @GetMapping("/redirect")
