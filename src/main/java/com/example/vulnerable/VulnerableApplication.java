@@ -35,10 +35,8 @@ public class VulnerableApplication {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/**")
-                        .allowedOrigins("*")  // Allows any origin
-                        .allowedMethods("*")  // Allows all HTTP methods
-                        .allowedHeaders("*")  // Allows all headers
-                        .allowCredentials(true);  // Dangerous with wildcard origin
+                        .allowedOrigins("http://localhost:3000")
+                        .allowedMethods("GET", "POST", "DELETE");  // Dangerous with wildcard origin
             }
         };
     }
