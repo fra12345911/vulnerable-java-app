@@ -28,7 +28,7 @@ public class VulnerableController {
 
     // In-memory user store (simulating database)
     private static final List<Map<String, Object>> users = new ArrayList<>();
-
+    private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(VulnerableController.class);
     static {
         Map<String, Object> admin = new HashMap<>();
         admin.put("id", 1);
@@ -85,8 +85,7 @@ public class VulnerableController {
         String password = credentials.get("password");
 
         // Vulnerable: Direct string concatenation simulating SQL injection
-        String query = "SELECT * FROM users WHERE username = '" + username + "' AND password = '" + password + "'";
-        System.out.println("Query: " + query);  // This would be vulnerable in real SQL
+        logger.debug("Login attempt for user: {}", username);
 
         Map<String, Object> response = new HashMap<>();
         for (Map<String, Object> user : users) {
@@ -109,21 +108,31 @@ public class VulnerableController {
     @GetMapping("/exec")
     public Map<String, Object> executeCommand(@RequestParam String cmd) {
         Map<String, Object> response = new HashMap<>();
+        // Επιτρέπονται μόνο συγκεκριμένες ασφαλείς εντολές (allowlist)
+        Set<String> allowedCommands = Set.of("date", "whoami");
+        if (cmd == null || !allowedCommands.contains(cmd)) {
+            response.put("success", false);
+            response.put("error", "Invalid or unauthorized command");
+            return response;
+        }
         try {
-            // Vulnerable: User input directly in shell command
-            Process process = Runtime.getRuntime().exec(cmd);
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            StringBuilder output = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            Process process = pb.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                process.waitFor();
+                response.put("success", true);
+                response.put("output", output.toString());
             }
-            process.waitFor();
-
-            response.put("success", true);
-            response.put("output", output.toString());
-        } catch (Exception e) {
-            response.put("error", e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            response.put("error", "Command execution interrupted");
+        } catch (IOException e) {
+            response.put("error", "Execution error");
         }
         return response;
     }
@@ -133,9 +142,13 @@ public class VulnerableController {
     public Map<String, Object> getFile(@RequestParam String filename) {
         Map<String, Object> response = new HashMap<>();
         try {
-            // Vulnerable: No sanitization of file path
-            String filePath = System.getProperty("user.dir") + "/uploads/" + filename;
-            String content = new String(Files.readAllBytes(Paths.get(filePath)));
+            java.nio.file.Path baseDir = Paths.get(System.getProperty("user.dir"), "uploads").toAbsolutePath().normalize();
+            java.nio.file.Path resolvedPath = baseDir.resolve(filename).normalize();
+            if (!resolvedPath.startsWith(baseDir) || resolvedPath.equals(baseDir)) {
+                response.put("error", "Invalid file path");
+                return response;
+            }
+            String content = Files.readString(resolvedPath);
             response.put("content", content);
         } catch (IOException e) {
             response.put("error", "File not found");
@@ -148,16 +161,22 @@ public class VulnerableController {
     public Map<String, Object> uploadFile(@RequestParam("file") String fileContent,
                                           @RequestParam("filename") String filename) {
         Map<String, Object> response = new HashMap<>();
+        if (filename == null || !filename.matches("^[a-zA-Z0-9._-]+$")) {
+            response.put("error", "Invalid filename");
+            return response;
+        }
         try {
-            // Vulnerable: No file type validation, no size limits
-            String uploadPath = System.getProperty("user.dir") + "/uploads/" + filename;
-            Files.write(Paths.get(uploadPath), fileContent.getBytes());
-
+            java.nio.file.Path baseDir = Paths.get(System.getProperty("user.dir"), "uploads").toAbsolutePath().normalize();
+            java.nio.file.Path uploadPath = baseDir.resolve(filename).normalize();
+            if (!uploadPath.startsWith(baseDir) || uploadPath.equals(baseDir)) {
+                response.put("error", "Invalid upload path");
+                return response;
+            }
+            Files.writeString(uploadPath, fileContent);
             response.put("success", true);
             response.put("filename", filename);
-            response.put("path", uploadPath);
         } catch (IOException e) {
-            response.put("error", e.getMessage());
+            response.put("error", "Failed to upload file");
         }
         return response;
     }
@@ -165,8 +184,8 @@ public class VulnerableController {
     // VULNERABILITY: Cross-Site Scripting (XSS) (CWE-79)
     @GetMapping("/search")
     public String search(@RequestParam String query) {
-        // Vulnerable: Reflects user input without sanitization
-        return "<h1>Search Results for: " + query + "</h1>";
+        String safeQuery = org.springframework.web.util.HtmlUtils.htmlEscape(query);
+        return "<h1>Search Results for: " + safeQuery + "</h1>";
     }
 
     // VULNERABILITY: Server-Side Request Forgery (SSRF) (CWE-918)
@@ -175,7 +194,7 @@ public class VulnerableController {
         Map<String, Object> response = new HashMap<>();
         try {
             // Vulnerable: No URL validation, allows internal network access
-            URL targetUrl = new URL(url);
+            URL targetUrl = java.net.URI.create(url).toURL();
             HttpURLConnection connection = (HttpURLConnection) targetUrl.openConnection();
             connection.setRequestMethod("GET");
 
@@ -213,18 +232,12 @@ public class VulnerableController {
 
     // VULNERABILITY: Insecure Deserialization (CWE-502)
     @PostMapping("/deserialize")
-    public Map<String, Object> deserialize(@RequestBody byte[] data) {
+    public Map<String, Object> deserialize(@RequestBody String jsonData) {
         Map<String, Object> response = new HashMap<>();
         try {
-            // Vulnerable: Deserializing untrusted data
-            ByteArrayInputStream bis = new ByteArrayInputStream(data);
-            ObjectInputStream ois = new ObjectInputStream(bis);
-            Object obj = ois.readObject();
-            ois.close();
-
-            response.put("result", obj.toString());
-        } catch (Exception e) {
-            response.put("error", e.getMessage());
+            ObjectMapper mapper = new ObjectMapper();
+            Map<?, ?> obj = mapper.readValue(jsonData, Map.class);        } catch (IOException e) {
+            response.put("error", "Invalid input format");
         }
         return response;
     }
@@ -326,12 +339,12 @@ public class VulnerableController {
     @GetMapping("/token")
     public Map<String, Object> getToken() {
         // Vulnerable: Random is not cryptographically secure
-        Random random = new Random();
-        String token = "";
+        java.security.SecureRandom random = new java.security.SecureRandom();
+        StringBuilder tokenBuilder = new StringBuilder(16);
         for (int i = 0; i < 16; i++) {
-            token += (char) ('a' + random.nextInt(26));
+            tokenBuilder.append((char) ('a' + random.nextInt(26)));
         }
-
+        String token = tokenBuilder.toString();
         Map<String, Object> response = new HashMap<>();
         response.put("token", token);
         return response;
@@ -340,8 +353,11 @@ public class VulnerableController {
     // VULNERABILITY: Open Redirect (CWE-601)
     @GetMapping("/redirect")
     public void redirect(@RequestParam String url, HttpServletResponse response) throws IOException {
-        // Vulnerable: No validation of redirect URL
-        response.sendRedirect(url);
+        if (url != null && url.startsWith("/") && !url.startsWith("//") && !url.startsWith("/\\")) {
+            response.sendRedirect(url);
+        } else {
+            response.sendError(HttpServletResponse.SC_BAD_REQUEST, "Invalid redirect URL");
+        }
     }
 
     // VULNERABILITY: Information Disclosure through Error Messages (CWE-209)
@@ -349,13 +365,11 @@ public class VulnerableController {
     public Map<String, Object> errorTest() {
         Map<String, Object> response = new HashMap<>();
         try {
-            throw new Exception("Database connection failed: jdbc:mysql://admin:password@localhost:3306/mydb");
-        } catch (Exception e) {
-            // Vulnerable: Exposes sensitive information in error message
-            response.put("error", e.getMessage());
-            response.put("stackTrace", Arrays.toString(e.getStackTrace()));
+            throw new SQLException("Database connection failed");
+        } catch (SQLException e) {
+            logger.error("Database error occurred", e);
+            response.put("error", "Internal database error");
         }
-        return response;
     }
 
     // VULNERABILITY: Weak Cryptography (CWE-327)
@@ -365,15 +379,14 @@ public class VulnerableController {
         try {
             String password = request.get("password");
             // Vulnerable: Using weak hash algorithm (MD5)
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] hash = md.digest(password.getBytes());
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(password.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             StringBuilder hexString = new StringBuilder();
             for (byte b : hash) {
                 hexString.append(String.format("%02x", b));
             }
-
             response.put("hash", hexString.toString());
-            response.put("algorithm", "MD5");
+            response.put("algorithm", "SHA-256");
         } catch (Exception e) {
             response.put("error", e.getMessage());
         }
